@@ -96,7 +96,7 @@ Fill this table with your actual pins (recommended for clarity):
 
 | Module | Signal | Arduino Pin |
 |-------|--------|-------------|
-| LCD | RS / EN / D4-D7 (or SDA/SCL) | `...` |
+| LCD | RS / EN / SDA / SCL | `...` |
 | Entry Sensor | OUT | `...` |
 | Exit Sensor | OUT | `...` |
 | Spot Sensors | OUT | `...` |
@@ -105,32 +105,6 @@ Fill this table with your actual pins (recommended for clarity):
 | Buzzer | + | `...` |
 | Elevator Motor | IN/STEP/DIR | `...` |
 | Limit Switches | Floor 1 / Floor 2 | `...` |
-
----
-
-## Project Structure
-
-Example structure (rename files to match yours):
-
-arduino-smart-garage/
-├─ src/
-│ ├─ smart_garage.ino
-│ ├─ gate_control.h
-│ ├─ spot_counter.h
-│ ├─ fire_alarm.h
-│ ├─ lcd_ui.h
-│ └─ elevator.h
-├─ docs/
-│ ├─ wiring_diagram.png
-│ └─ state_machine_notes.md
-└─ README.md
-
-yaml
-Copy code
-
-If your repo is just a single `.ino` file, that’s totally fine too.
-
----
 
 ## Setup & Run
 
