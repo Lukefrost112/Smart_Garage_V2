@@ -127,5 +127,5 @@ Fill this table with your actual pins (recommended for clarity):
 
 1. Clone the repo:
    ```bash
-   git clone https://github.com/<your-username>/arduino-smart-garage.git
+   git clone https://github.com/Lukefrost112/arduino-smart-garage.git
    cd arduino-smart-garage
