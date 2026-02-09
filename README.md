@@ -38,8 +38,6 @@ This project includes:
 
 ## Hardware (Typical Setup)
 
-> Adjust this list based on what you actually used.
-
 **Core**
 - Arduino (Uno / Nano / Mega)
 - 16x2 LCD (parallel or I2C)
