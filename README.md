@@ -8,6 +8,7 @@ This project includes:
 - 🚧 **Automatic gate** (opens/closes based on entry/exit detection)
 - 📟 **LCD UI** (welcome screen, exit screen, and live open-spots display)
 - 🛗 **Elevator system** (basic elevator logic for moving between levels / platforms)
+- 💡 **Smart lighting system** (potentiometer controls brightness of 3 LEDs)
 
 ---
 
@@ -31,8 +32,12 @@ This project includes:
   - (optional) override behavior like stopping the gate/elevator for safety
 
 ### Elevator System
-- Moves between floors/positions based on requested direction or target floor.
-- (Implementation depends on your hardware: DC motor + limit switches, stepper, or servo.)
+- Moves between floors/positions based on requested direction or target floor.  
+  (Implementation depends on your hardware: DC motor + limit switches, stepper, or servo.)
+
+### Smart Lighting System
+- A **potentiometer** controls the brightness of **3 LEDs** using PWM.
+- Can be used as garage lighting level control (dim ↔ bright).
 
 ---
 
@@ -55,6 +60,11 @@ This project includes:
 - Elevator motor (servo/stepper/DC motor) + driver
 - LEDs (status indicators)
 
+**Lighting**
+- Potentiometer (e.g., 10k)
+- 3x LEDs + resistors (e.g., 220Ω)
+- PWM-capable pins for dimming (recommended)
+
 ---
 
 ## How It Works (System Overview)
@@ -74,7 +84,7 @@ This project includes:
 - Default: shows **Open Spots**
 - On entry: shows **Welcome**
 - On exit: shows **Goodbye / Exit**
-- Returns to status screen after a short delay
+- Returns to status screen after a short delay.
 
 ### 4) Fire Alarm Priority
 - If fire is detected:
@@ -85,6 +95,11 @@ This project includes:
 - Receives a request (button/floor select or sensor-based).
 - Moves motor until it reaches target (limit switches / encoder / timed move).
 - Stops safely and updates state.
+
+### 6) Smart Lighting Logic
+- Reads potentiometer value (0–1023).
+- Maps it to PWM output (0–255).
+- Writes brightness to all 3 LEDs (or individually if desired).
 
 ---
 
@@ -103,6 +118,10 @@ Fill this table with your actual pins (recommended for clarity):
 | Buzzer | + | `...` |
 | Elevator Motor | IN/STEP/DIR | `...` |
 | Limit Switches | Floor 1 / Floor 2 | `...` |
+| Potentiometer | Signal (middle pin) | `...` |
+| Lighting LEDs (x3) | PWM pins | `...` |
+
+---
 
 ## Setup & Run
 
