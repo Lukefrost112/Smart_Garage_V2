@@ -1,52 +1,107 @@
-// === Fire Alarm System ===
-// If temperature >= threshold => buzzer ON + red LED blinks every 0.5s (non-blocking).
+/*
+  Fire / Flame Alarm (ESP32) - DIGITAL FLAME SENSOR (DO)
+  ------------------------------------------------------------
+  - Digital flame sensor module output (DO)
+  - If flame detected:
+      * Buzzer ON (1kHz)
+      * Red LED blinks (non-blocking)
 
-#define TEMP_PIN   A2
-#define BUZZER_PIN 10
-#define RED_LED    11
+  Board: ESP32 DevKit (Arduino-ESP32)
 
-const float TEMP_THRESHOLD_C = 50.0; // change to what you want
-const unsigned long BLINK_MS = 500;
+  Notes:
+  - Many flame modules: DO is LOW when flame detected.
+    If yours is HIGH on flame, set FLAME_ACTIVE_LOW = false.
+*/
 
-unsigned long lastBlink = 0;
-bool ledState = false;
+static const int PIN_FLAME_DO = 39;   // digital flame sensor DO (input-only pin)
+static const int PIN_BUZZER   = 15;   // PWM buzzer
+static const int PIN_RED_LED  = 2;    // warning LED (often onboard)
 
-float readTempC_LM35() {
-  int raw = analogRead(TEMP_PIN);              // 0..1023
-  float voltage = raw * (5.0 / 1023.0);        // volts
-  float tempC = voltage * 100.0;               // LM35: 10mV per °C => 0.01V per °C => V*100
-  return tempC;
+static const bool FLAME_ACTIVE_LOW = true;
+
+// Debounce/confirm (prevents random noise triggering)
+static const unsigned long SAMPLE_MS = 50;
+static const uint8_t FLAME_CONFIRM_N = 3; // require N consecutive "flame" readings
+
+static const unsigned long BLINK_MS = 500;
+
+// LEDC buzzer PWM
+static const int LEDC_CH_BUZZER = 0;
+static const int BUZZ_FREQ_HZ   = 1000;
+static const int PWM_RES_BITS   = 8;   // 0..255
+
+static unsigned long lastSample = 0;
+static uint8_t flameCount = 0;
+static bool fireActive = false;
+
+static unsigned long lastBlink = 0;
+static bool ledState = false;
+
+static void buzzerOn()  { ledcWrite(LEDC_CH_BUZZER, 128); } // 50% duty
+static void buzzerOff() { ledcWrite(LEDC_CH_BUZZER, 0);   }
+
+static bool rawFlameDetected() {
+  int v = digitalRead(PIN_FLAME_DO);
+  bool detected = FLAME_ACTIVE_LOW ? (v == LOW) : (v == HIGH);
+  return detected;
 }
 
 void setup() {
-  pinMode(BUZZER_PIN, OUTPUT);
-  pinMode(RED_LED, OUTPUT);
-  Serial.begin(9600);
+  Serial.begin(115200);
+
+  pinMode(PIN_FLAME_DO, INPUT);   // DO is usually push-pull from module comparator
+  pinMode(PIN_RED_LED, OUTPUT);
+
+  ledcSetup(LEDC_CH_BUZZER, BUZZ_FREQ_HZ, PWM_RES_BITS);
+  ledcAttachPin(PIN_BUZZER, LEDC_CH_BUZZER);
+
+  buzzerOff();
+  digitalWrite(PIN_RED_LED, LOW);
+
+  Serial.println("Fire Alarm (Digital Flame DO) boot OK");
 }
 
 void loop() {
-  float tempC = readTempC_LM35();
-  bool fire = (tempC >= TEMP_THRESHOLD_C);
+  unsigned long now = millis();
 
-  if (fire) {
-    tone(BUZZER_PIN, 1000); // 1kHz alarm tone
+  if (now - lastSample >= SAMPLE_MS) {
+    lastSample = now;
 
-    unsigned long now = millis();
+    bool flame = rawFlameDetected();
+
+    if (flame) {
+      if (flameCount < 255) flameCount++;
+    } else {
+      flameCount = 0;
+    }
+
+    fireActive = (flameCount >= FLAME_CONFIRM_N);
+
+    if (!fireActive) {
+      buzzerOff();
+      digitalWrite(PIN_RED_LED, LOW);
+      ledState = false;
+    }
+  }
+
+  if (fireActive) {
+    buzzerOn();
+
     if (now - lastBlink >= BLINK_MS) {
       lastBlink = now;
       ledState = !ledState;
-      digitalWrite(RED_LED, ledState);
+      digitalWrite(PIN_RED_LED, ledState ? HIGH : LOW);
     }
-  } else {
-    noTone(BUZZER_PIN);
-    digitalWrite(RED_LED, LOW);
-    ledState = false;
   }
 
-  Serial.print("TempC=");
-  Serial.print(tempC);
-  Serial.print("  Fire=");
-  Serial.println(fire ? "YES" : "NO");
-
-  delay(100);
+  // Debug (optional)
+  /*
+  static unsigned long lastPrint = 0;
+  if (now - lastPrint > 500) {
+    lastPrint = now;
+    Serial.print("raw="); Serial.print(rawFlameDetected() ? "FLAME" : "----");
+    Serial.print("  count="); Serial.print(flameCount);
+    Serial.print("  active="); Serial.println(fireActive ? "YES" : "NO");
+  }
+  */
 }
