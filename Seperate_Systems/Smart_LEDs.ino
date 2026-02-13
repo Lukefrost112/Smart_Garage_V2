@@ -1,54 +1,80 @@
-// === Smart Lighting System ===
-// POT controls brightness of 3 LEDs.
-// If LDR detects >50% light, LEDs turn OFF to save power.
+/*
+  Smart Lighting System (ESP32)
+  ------------------------------------------------------------
+  - POT controls brightness of 3 LEDs (PWM)
+  - Ambient LDR: if bright, LEDs turn OFF to save power
 
-#define POT_PIN   A0
-#define LDR_PIN   A1
+  Board: ESP32 DevKit (Arduino-ESP32)
 
-#define LED1_PIN  5
-#define LED2_PIN  6
-#define LED3_PIN  9
+  Notes:
+  - Uses ADC2 pins for POT/LDR. If you enable Wi-Fi, ADC2 reads may break.
+*/
 
-// Adjust this based on your LDR divider and testing.
-// 50% "light" is not universal on analogRead.
-// Start with ~512 and tweak.
-const int LDR_THRESHOLD = 512;
+static const int PIN_POT_BRIGHTNESS = 25; // ADC2
+static const int PIN_LDR_AMBIENT    = 26; // ADC2
+
+static const int PIN_LED_1          = 16; // PWM
+static const int PIN_LED_2          = 17; // PWM
+static const int PIN_LED_3          = 18; // PWM
+
+// 12-bit ADC (0..4095): ~50% is 2048. Tune this for your divider/lighting.
+static int ambientLdrThreshold = 2200;
+
+// LEDC PWM setup
+static const int LEDC_CH_LED1 = 0;
+static const int LEDC_CH_LED2 = 1;
+static const int LEDC_CH_LED3 = 2;
+
+static const int LEDC_FREQ_HZ = 5000;
+static const int LEDC_RES_BITS = 8; // 0..255
+
+static const unsigned long UPDATE_MS = 60;
+static unsigned long lastUpdate = 0;
+
+static int analogRead12(int pin) { return analogRead(pin); }
+
+static void setAll(uint8_t duty) {
+  ledcWrite(LEDC_CH_LED1, duty);
+  ledcWrite(LEDC_CH_LED2, duty);
+  ledcWrite(LEDC_CH_LED3, duty);
+}
 
 void setup() {
-  pinMode(LED1_PIN, OUTPUT);
-  pinMode(LED2_PIN, OUTPUT);
-  pinMode(LED3_PIN, OUTPUT);
+  Serial.begin(115200);
 
-  Serial.begin(9600);
+  pinMode(PIN_POT_BRIGHTNESS, INPUT);
+  pinMode(PIN_LDR_AMBIENT, INPUT);
+
+  ledcSetup(LEDC_CH_LED1, LEDC_FREQ_HZ, LEDC_RES_BITS);
+  ledcSetup(LEDC_CH_LED2, LEDC_FREQ_HZ, LEDC_RES_BITS);
+  ledcSetup(LEDC_CH_LED3, LEDC_FREQ_HZ, LEDC_RES_BITS);
+
+  ledcAttachPin(PIN_LED_1, LEDC_CH_LED1);
+  ledcAttachPin(PIN_LED_2, LEDC_CH_LED2);
+  ledcAttachPin(PIN_LED_3, LEDC_CH_LED3);
+
+  setAll(0);
+
+  Serial.println("Smart Lighting boot OK");
 }
 
 void loop() {
-  int pot = analogRead(POT_PIN);        // 0..1023
-  int ldr = analogRead(LDR_PIN);        // 0..1023
+  unsigned long now = millis();
+  if (now - lastUpdate < UPDATE_MS) return;
+  lastUpdate = now;
 
-  int brightness = map(pot, 0, 1023, 0, 255);
+  int pot = analogRead12(PIN_POT_BRIGHTNESS); // 0..4095
+  int ldr = analogRead12(PIN_LDR_AMBIENT);    // 0..4095
 
-  bool isBrightOutside = (ldr > LDR_THRESHOLD);
+  uint8_t brightness = (uint8_t)map(pot, 0, 4095, 0, 255);
+  bool isBright = (ldr > ambientLdrThreshold);
 
-  if (isBrightOutside) {
-    analogWrite(LED1_PIN, 0);
-    analogWrite(LED2_PIN, 0);
-    analogWrite(LED3_PIN, 0);
-  } else {
-    analogWrite(LED1_PIN, brightness);
-    analogWrite(LED2_PIN, brightness);
-    analogWrite(LED3_PIN, brightness);
-  }
+  if (isBright) setAll(0);
+  else setAll(brightness);
 
   // Debug
-  Serial.print("POT=");
-  Serial.print(pot);
-  Serial.print("  LDR=");
-  Serial.print(ldr);
-  Serial.print("  Brightness=");
-  Serial.print(brightness);
-  Serial.print("  LEDs=");
-  Serial.println(isBrightOutside ? "OFF" : "ON");
-
-  delay(50);
+  Serial.print("POT="); Serial.print(pot);
+  Serial.print("  LDR="); Serial.print(ldr);
+  Serial.print("  Brightness="); Serial.print((int)brightness);
+  Serial.print("  LEDs="); Serial.println(isBright ? "OFF" : "ON");
 }
