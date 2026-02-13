@@ -1,12 +1,12 @@
 /*
-  Smart Garage - Full System (ESP32)
+  Smart Garage - Full System (ESP32) - DIGITAL FLAME SENSOR VERSION
   ------------------------------------------------------------
   Combines:
    1) Gate + IR entry/exit logic + Servo
    2) OLED UI (welcome/exit + live spots)
    3) Parking spot occupancy using 5x LDRs (dark = occupied)
    4) Smart lighting: POT brightness + ambient LDR auto-off
-   5) Fire alarm: LM35 analog temperature + buzzer + red LED
+   5) Flame alarm: DIGITAL DO + buzzer + red LED + OLED alarm
    6) Elevator motor: hold button UP/DOWN to move
 
   Board: ESP32 DevKit (Arduino-ESP32)
@@ -33,18 +33,20 @@ static const uint8_t MAX_SPOTS = 5;
 static const int PIN_LDR_SPOTS[MAX_SPOTS] = { 34, 35, 32, 33, 36 }; // dark = occupied
 
 // Smart lighting
-static const int PIN_POT_BRIGHTNESS   = 25; // ADC2 OK (no Wi-Fi)
-static const int PIN_LDR_AMBIENT      = 26; // ADC2 OK (no Wi-Fi)
+static const int PIN_POT_BRIGHTNESS   = 25;
+static const int PIN_LDR_AMBIENT      = 26;
 static const int PIN_LED_1            = 16; // PWM
 static const int PIN_LED_2            = 17; // PWM
 static const int PIN_LED_3            = 18; // PWM
 
-// Fire alarm (LM35)
-static const int PIN_TEMP_LM35        = 27; // ADC2 OK (no Wi-Fi)
-static const int PIN_FIRE_BUZZER      = 15; // PWM capable (avoid holding LOW at boot)
+// Flame alarm (digital DO)
+static const int PIN_FLAME_DO         = 39; // input-only, good for sensors
+static const bool FLAME_ACTIVE_LOW    = true; // flip if your module is active HIGH
+
+static const int PIN_FIRE_BUZZER      = 15; // PWM capable
 static const int PIN_FIRE_RED_LED     = 2;  // often onboard LED
 
-// Elevator motor (two direction pins, EN pin tied HIGH on driver)
+// Elevator motor (two direction pins, EN tied HIGH on driver)
 static const int PIN_ELEV_IN1         = 19;
 static const int PIN_ELEV_IN2         = 23;
 
@@ -119,7 +121,7 @@ static unsigned long lastSpotUpdate = 0;
 static const unsigned long LIGHT_UPDATE_MS = 60;
 static unsigned long lastLightUpdate = 0;
 
-// "50% bright" on 12-bit ADC (0..4095) is ~2048; tune for your divider
+// Tune for your divider/lighting
 static int ambientLdrThreshold = 2200; // above => bright => LEDs OFF
 
 // LEDC (PWM) channels
@@ -132,15 +134,17 @@ static const int LEDC_FREQ_LED   = 5000;
 static const int LEDC_RES_BITS   = 8;      // 0..255
 static const int LEDC_FREQ_BUZZ  = 1000;   // 1kHz beep
 
-// -------------------- Fire Alarm --------------------
-static const float TEMP_THRESHOLD_C = 50.0f; // tune
+// -------------------- Flame Alarm --------------------
+static const unsigned long FIRE_SAMPLE_MS = 50;
+static unsigned long lastFireSample = 0;
+
+static const uint8_t FLAME_CONFIRM_N = 3;  // require N consecutive flame reads
+static uint8_t flameCount = 0;
+
 static const unsigned long FIRE_BLINK_MS = 500;
 static unsigned long lastFireBlink = 0;
 static bool fireLedState = false;
 
-static const unsigned long FIRE_SAMPLE_MS = 200;
-static unsigned long lastFireSample = 0;
-static float lastTempC = 0.0f;
 static bool fireActive = false;
 
 // -------------------- Elevator --------------------
@@ -184,16 +188,12 @@ static bool readIrStable(int pin, bool &rawLast, unsigned long &tChange, bool &s
 
 static bool bothIrClear() { return (!irOutside && !irInside); }
 
-// -------------------- Spots --------------------
 static int analogRead12(int pin) {
-  // Arduino-ESP32 uses 12-bit by default, but keep this helper for clarity
   return analogRead(pin); // 0..4095
 }
 
+// -------------------- Spots --------------------
 static void calibrateSpots() {
-  // Assumption: at boot, spots are mostly EMPTY (or at least not all covered).
-  // If a spot is covered at boot, it will calibrate lower and may mis-detect.
-  // You can re-run calibration by resetting the board with spots empty.
   const int samples = 40;
   for (int i = 0; i < MAX_SPOTS; i++) {
     long sum = 0;
@@ -220,16 +220,13 @@ static void updateSpots() {
   for (int i = 0; i < MAX_SPOTS; i++) {
     int raw = analogRead12(PIN_LDR_SPOTS[i]);
 
-    // EMA smoothing (75% previous, 25% new)
+    // EMA smoothing (75% prev, 25% new)
     spotSmooth[i] = (spotSmooth[i] * 3 + raw) / 4;
 
-    // hysteresis: decide candidate state
     bool candidate;
     if (spotOccupied[i]) {
-      // If occupied, require it to become clearly bright to switch to empty
       candidate = !(spotSmooth[i] > (spotThreshold[i] + SPOT_HYST));
     } else {
-      // If empty, require it to become clearly dark to switch to occupied
       candidate = (spotSmooth[i] < spotThreshold[i]);
     }
 
@@ -243,9 +240,8 @@ static void updateSpots() {
       spotConfirmCount[i] = 0;
     }
 
-    // Slowly adapt baseline when the spot is EMPTY (helps with day/night changes)
+    // Slowly adapt baseline when EMPTY (helps with ambient changes)
     if (!spotOccupied[i]) {
-      // 99% old + 1% new (very slow)
       spotBaseline[i] = (spotBaseline[i] * 99 + spotSmooth[i]) / 100;
       spotThreshold[i] = max(0, spotBaseline[i] - SPOT_MARGIN);
     }
@@ -327,14 +323,13 @@ static void drawMessage(ScreenMode mode) {
 static void setScreenMode(ScreenMode mode, unsigned long durationMs = 0) {
   screenMode = mode;
   lastOledUpdate = 0;
-
   if (durationMs > 0) messageUntil = millis() + durationMs;
 }
 
 static void oledUpdateIfNeeded() {
   unsigned long now = millis();
 
-  // If we're showing a timed message, return to status after it expires (unless FIRE)
+  // Timed messages return to status (unless FIRE)
   if (screenMode != SCREEN_STATUS && screenMode != SCREEN_FIRE) {
     if (now > messageUntil) {
       screenMode = SCREEN_STATUS;
@@ -350,7 +345,6 @@ static void oledUpdateIfNeeded() {
     if (spotOccupied[i] != lastShownOcc[i]) changed = true;
   }
 
-  // Also redraw periodically to keep FIRE! indicator responsive
   if (!changed && (now - lastOledUpdate < OLED_MIN_UPDATE_MS)) return;
 
   lastOledUpdate = now;
@@ -372,7 +366,7 @@ static void updateGateLogic() {
   // FIRE override: gate stays open
   if (fireActive) {
     targetGateAngle = GATE_OPEN_ANGLE;
-    gateState = GATE_WAIT_CLEAR; // doesn't matter much
+    gateState = GATE_WAIT_CLEAR;
     return;
   }
 
@@ -458,7 +452,6 @@ static void setupPwmChannels() {
   ledcSetup(LEDC_CH_BUZZER, LEDC_FREQ_BUZZ, LEDC_RES_BITS);
   ledcAttachPin(PIN_FIRE_BUZZER, LEDC_CH_BUZZER);
 
-  // start off
   ledcWrite(LEDC_CH_LED1, 0);
   ledcWrite(LEDC_CH_LED2, 0);
   ledcWrite(LEDC_CH_LED3, 0);
@@ -476,8 +469,8 @@ static void updateSmartLighting() {
   if (now - lastLightUpdate < LIGHT_UPDATE_MS) return;
   lastLightUpdate = now;
 
-  int pot = analogRead12(PIN_POT_BRIGHTNESS);   // 0..4095
-  int amb = analogRead12(PIN_LDR_AMBIENT);      // 0..4095
+  int pot = analogRead12(PIN_POT_BRIGHTNESS);
+  int amb = analogRead12(PIN_LDR_AMBIENT);
 
   uint8_t brightness = (uint8_t)map(pot, 0, 4095, 0, 255);
   bool isBrightOutside = (amb > ambientLdrThreshold);
@@ -486,25 +479,32 @@ static void updateSmartLighting() {
   else setAllLights(brightness);
 }
 
-// -------------------- Fire Alarm --------------------
-static float readTempC_LM35() {
-  int raw = analogRead12(PIN_TEMP_LM35);     // 0..4095
-  float voltage = (raw * 3.3f) / 4095.0f;    // ESP32 ADC reference approx 3.3V
-  return voltage * 100.0f;                   // LM35: 10mV per C
+// -------------------- Flame Alarm --------------------
+static bool rawFlameDetected() {
+  int v = digitalRead(PIN_FLAME_DO);
+  return FLAME_ACTIVE_LOW ? (v == LOW) : (v == HIGH);
 }
 
 static void buzzerOn()  { ledcWrite(LEDC_CH_BUZZER, 128); } // 50% duty
 static void buzzerOff() { ledcWrite(LEDC_CH_BUZZER, 0);   }
 
-static void updateFireAlarm() {
+static void updateFlameAlarm() {
   unsigned long now = millis();
   if (now - lastFireSample < FIRE_SAMPLE_MS) return;
   lastFireSample = now;
 
-  lastTempC = readTempC_LM35();
-  fireActive = (lastTempC >= TEMP_THRESHOLD_C);
+  bool flame = rawFlameDetected();
 
-  if (fireActive) {
+  if (flame) {
+    if (flameCount < 255) flameCount++;
+  } else {
+    flameCount = 0;
+  }
+
+  bool newFire = (flameCount >= FLAME_CONFIRM_N);
+
+  if (newFire) {
+    fireActive = true;
     buzzerOn();
 
     if (now - lastFireBlink >= FIRE_BLINK_MS) {
@@ -513,19 +513,21 @@ static void updateFireAlarm() {
       digitalWrite(PIN_FIRE_RED_LED, fireLedState ? HIGH : LOW);
     }
 
-    // Make sure the OLED shows ALARM screen at least once
     if (screenMode != SCREEN_FIRE) {
       setScreenMode(SCREEN_FIRE);
     }
   } else {
-    buzzerOff();
-    digitalWrite(PIN_FIRE_RED_LED, LOW);
-    fireLedState = false;
+    if (fireActive) {
+      // just turned OFF
+      buzzerOff();
+      digitalWrite(PIN_FIRE_RED_LED, LOW);
+      fireLedState = false;
 
-    // Return to normal UI if we were in alarm mode
-    if (screenMode == SCREEN_FIRE) {
-      setScreenMode(SCREEN_STATUS);
+      if (screenMode == SCREEN_FIRE) {
+        setScreenMode(SCREEN_STATUS);
+      }
     }
+    fireActive = false;
   }
 }
 
@@ -599,10 +601,11 @@ void setup() {
   pinMode(PIN_LED_2, OUTPUT);
   pinMode(PIN_LED_3, OUTPUT);
 
-  // Fire alarm pins
-  pinMode(PIN_TEMP_LM35, INPUT);
+  // Flame + alarm outputs
+  pinMode(PIN_FLAME_DO, INPUT);
   pinMode(PIN_FIRE_RED_LED, OUTPUT);
   pinMode(PIN_FIRE_BUZZER, OUTPUT);
+  digitalWrite(PIN_FIRE_RED_LED, LOW);
 
   // Elevator
   pinMode(PIN_ELEV_IN1, OUTPUT);
@@ -623,8 +626,8 @@ void setup() {
   setScreenMode(SCREEN_STATUS);
   oledUpdateIfNeeded();
 
-  Serial.println("Smart Garage boot OK");
-  Serial.println("Tip: Tune SPOT_MARGIN / ambientLdrThreshold if needed.");
+  Serial.println("Smart Garage (Digital Flame DO) boot OK");
+  Serial.println("If flame logic is inverted, flip FLAME_ACTIVE_LOW.");
 }
 
 void loop() {
@@ -634,31 +637,21 @@ void loop() {
 
   // Update subsystems (non-blocking)
   updateSpots();
-  updateFireAlarm();
+  updateFlameAlarm();
   updateGateLogic();
   updateServoSmoothing();
   updateSmartLighting();
   updateElevator();
   oledUpdateIfNeeded();
 
-  // Optional: debug print every 1s
+  // Optional debug
   /*
   static unsigned long lastPrint = 0;
-  if (millis() - lastPrint > 1000) {
+  if (millis() - lastPrint > 800) {
     lastPrint = millis();
-    Serial.print("TempC="); Serial.print(lastTempC);
-    Serial.print(" Fire="); Serial.print(fireActive ? "YES" : "NO");
+    Serial.print("Fire="); Serial.print(fireActive ? "YES" : "NO");
     Serial.print(" Spots="); Serial.print(availableSpots); Serial.print("/"); Serial.print(MAX_SPOTS);
     Serial.print(" IR(out,in)="); Serial.print(irOutside); Serial.print(","); Serial.println(irInside);
-
-    for (int i = 0; i < MAX_SPOTS; i++) {
-      Serial.print("S"); Serial.print(i+1);
-      Serial.print(" raw="); Serial.print(analogRead12(PIN_LDR_SPOTS[i]));
-      Serial.print(" thr="); Serial.print(spotThreshold[i]);
-      Serial.print(" occ="); Serial.print(spotOccupied[i] ? 1 : 0);
-      Serial.print("   ");
-    }
-    Serial.println();
   }
   */
 }
